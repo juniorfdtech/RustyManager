@@ -195,6 +195,81 @@ else
     esac
     increment_step
 
+    # ---->>>> Instalando OpenVPN
+    show_progress "Instalando OpenVPN..."
+    case $OS_NAME in
+        ubuntu|debian)
+            apt-get install -y openvpn openssl -y > /dev/null 2>&1 || error_exit "Falha ao instalar o openvpn"
+            ;;
+        almalinux|rocky)
+            dnf install -y openvpn openssl > /dev/null 2>&1 || error_exit "Falha ao instalar o openvpn"
+            ;;
+    esac
+    if [ ! -d "/etc/openvpn/easy-rsa" ]; then
+        curl -L -o /root/EasyRSA-3.2.1.tgz "https://github.com/OpenVPN/easy-rsa/releases/download/v3.2.1/EasyRSA-3.2.1.tgz" > /dev/null 2>&1 || error_exit "Falha ao baixar EasyRSA"
+        tar xzf /root/EasyRSA-3.2.1.tgz -C /root/ > /dev/null 2>&1 || error_exit "Falha ao extrair o EasyRSA"
+        mv -f /root/EasyRSA-3.2.1/ /etc/openvpn/easy-rsa/ > /dev/null 2>&1 || error_exit "Falha ao mover o EasyRSA"
+        chown -R root:root /etc/openvpn/easy-rsa/ > /dev/null 2>&1 || error_exit "Falha ao configurar permissões do EasyRSA"
+        rm -f /root/EasyRSA-3.2.1.tgz > /dev/null 2>&1 || error_exit "Falha ao remover o arquivo do EasyRSA"
+        cd /etc/openvpn/easy-rsa/ > /dev/null 2>&1 || error_exit "Falha ao acessar pasta do EasyRSA"
+        ./easyrsa --batch init-pki > /dev/null 2>&1 || error_exit "Falha ao iniciar pki"
+        ./easyrsa --batch build-ca nopass > /dev/null 2>&1 || error_exit "Falha ao gerar certificado"
+        ./easyrsa --batch gen-dh > /dev/null 2>&1 || error_exit "Falha ao gerar dh"
+        ./easyrsa --batch build-server-full server nopass > /dev/null 2>&1 || error_exit "Falha ao gerar certificado do servidor"
+        ./easyrsa --batch build-client-full client nopass > /dev/null 2>&1 || error_exit "Falha ao gerar certificado do cliente"
+        cp pki/ca.crt pki/private/ca.key pki/dh.pem pki/issued/server.crt pki/private/server.key /etc/openvpn  > /dev/null 2>&1 || error_exit "Falha ao copiar arquivos do openvpn"
+        openvpn --genkey --secret /etc/openvpn/ta.key  > /dev/null 2>&1 || error_exit "Falha ao gerar a chave"
+    fi
+
+
+    plugin_path=$(find /usr -type f -name 'openvpn-plugin-auth-pam.so')
+ echo "port none
+proto none
+dev tun
+sndbuf 0
+rcvbuf 0
+ca /etc/openvpn/ca.crt
+cert /etc/openvpn/server.crt
+key /etc/openvpn/server.key
+dh /etc/openvpn/dh.pem
+tls-auth /etc/openvpn/ta.key 0
+topology subnet
+server 10.8.0.0 255.255.255.0
+ifconfig-pool-persist ipp.txt
+verb 3
+push \"redirect-gateway def1 bypass-dhcp\"
+push \"dhcp-option DNS 8.8.8.8\"
+push \"dhcp-option DNS 8.8.4.4\"
+keepalive 10 120
+float
+cipher AES-256-CBC
+comp-lzo yes
+user nobody
+group nogroup
+persist-key
+persist-tun
+status openvpn-status.log
+client-to-client
+client-cert-not-required
+username-as-common-name
+plugin $plugin_path login
+duplicate-cn" > /etc/openvpn/server.conf || error_exit "Falha ao criar openvpn server.conf"
+
+    echo 1 > /proc/sys/net/ipv4/ip_forward > /dev/null 2>&1 || error_exit "Falha ao habilitar ip forwarding"
+    sed -i '/net.ipv4.ip_forward/s/^#//g' /etc/sysctl.conf > /dev/null 2>&1 || error_exit "Falha ao habilitar ip forwarding"
+    sysctl -p > /dev/null 2>&1 || error_exit "Falha ao habilitar ip forwarding"
+    iptables -t nat -F > /dev/null 2>&1 || error_exit "Falha ao limpar regras do iptables"
+    iptables -F > /dev/null 2>&1 || error_exit "Falha ao limpar regras do iptables"
+    iptables -P INPUT ACCEPT > /dev/null 2>&1 || error_exit "Falha ao adicionar regras do iptables"
+    iptables -P FORWARD ACCEPT > /dev/null 2>&1 || error_exit "Falha ao adicionar regras do iptables"
+    iptables -P OUTPUT ACCEPT > /dev/null 2>&1 || error_exit "Falha ao adicionar regras do iptables"
+    iptables -t nat -A POSTROUTING -o $(ip route | grep default | awk '{print $5}') -j MASQUERADE > /dev/null 2>&1 || error_exit "Falha ao adicionar regra para permitir o trafego do openvpn no iptables"
+
+    systemctl stop openvpn@server > /dev/null 2>&1
+    systemctl disable openvpn@server > /dev/null 2>&1
+    increment_step
+
+
     # ---->>>> Limpeza
     show_progress "Limpando diretórios temporários..."
     cd /root/
